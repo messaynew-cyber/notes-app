@@ -1,0 +1,77 @@
+name: Build APK
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.22.0"
+          channel: stable
+      - name: Bootstrap Flutter project
+        id: bootstrap
+        run: |
+          if [ ! -f "android/gradlew" ]; then
+            flutter create --platforms android . 2>&1 | tee bootstrap.log || echo "::warning ::Bootstrap failed — using existing android/ files."
+          fi
+        continue-on-error: true
+      - run: flutter pub get
+      - name: Build APK
+        id: build_apk
+        run: flutter build apk --release 2>&1 | tee build.log
+      - name: ✅ Build Succeeded
+        if: steps.build_apk.outcome == 'success'
+        run: echo "## ✅ Build Passed" >> $GITHUB_STEP_SUMMARY
+      - name: ❌ Capture Build Errors
+        if: steps.build_apk.outcome == 'failure'
+        run: |
+          echo "## ❌ Build Failed" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          tail -100 build.log >> $GITHUB_STEP_SUMMARY 2>/dev/null || true
+          echo '```' >> $GITHUB_STEP_SUMMARY
+      - name: Upload build-log artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+      - uses: actions/upload-artifact@v4
+        if: steps.build_apk.outcome == 'success'
+        with:
+          name: app-release
+          path: build/app/outputs/flutter-apk/app-release.apk
+      - name: Publish Nightly Release
+        if: steps.build_apk.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete nightly --yes --cleanup-tag 2>/dev/null || true
+          git push origin :refs/tags/nightly 2>/dev/null || true
+          gh release create nightly build/app/outputs/flutter-apk/app-release.apk \
+            --title "Nightly Build" --prerelease \
+            --notes "Automated build from CI."
+      - name: __tobia_build_log__
+        if: always()
+        run: touch build.log bootstrap.log 2>/dev/null || true
+      - name: __tobia_upload_logs__
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: __tobia_build_log__
+          path: |
+            build.log
+            bootstrap.log
+          retention-days: 1
+
